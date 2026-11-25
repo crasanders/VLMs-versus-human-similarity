@@ -1,0 +1,15 @@
+{
+  "timestamp": "20250612_112348",
+  "args": {
+    "start": 0,
+    "n_trials": 64620,
+    "shuffle": false,
+    "seed": 123,
+    "prompt_type": "encourage_middle",
+    "anchors": false,
+    "model": "gpt-4o",
+    "run_name": "encourage_middle_360",
+    "human_data": "360"
+  },
+  "completion_timestamp": "20250614_034831"
+}

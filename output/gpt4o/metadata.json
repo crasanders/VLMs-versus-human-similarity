@@ -1,0 +1,12 @@
+{
+  "timestamp": "20261122_131206",
+  "model": "gpt-4o",
+  "prompt_type": "encourage_middle",
+  "system_prompt": "You are assisting in a study in which you are shown pairs of schematic faces and rate how visually similar they are on a scale from 1 to 10, with 1 being most dissimilar, 5 or 6 being moderately similar, and 10 being most similar. You only respond with a single number from 1 to 10, without explaining your reasoning. You use the full range of the 1-10 scale and err on the side of using the middle of the scale (5 or 6) when you are unsure. Faces that are very similar in almost all respects should be rated as highly similar (9 or 10). You only use a 1 or 2 when the faces are truly different in every meaningful visual way. Most ratings should fall somewhere in the middle of the scale. ",
+  "question_prompt": "From 1-10, how visually similar are these two faces?",
+  "scale": "1-10",
+  "seed": 123,
+  "n_faces": 32,
+  "n_pairs": 496,
+  "completion_timestamp": "20261122_131240"
+}

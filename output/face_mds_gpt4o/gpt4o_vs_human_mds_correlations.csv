@@ -1,0 +1,5 @@
+,Human Dim 1 (Eye Height),Human Dim 2 (Eye Separation),Human Dim 3 (Nose Length),Human Dim 4 (Mouth Height)
+GPT-4o Dim 1 (Eye Height),0.928,0.059,0.003,0.067
+GPT-4o Dim 2 (Eye Separation),0.065,0.877,0.066,-0.144
+GPT-4o Dim 3 (Nose Length),-0.029,0.007,0.834,-0.133
+GPT-4o Dim 4 (Mouth Height),0.07,-0.104,-0.147,0.95

@@ -1,0 +1,15 @@
+{
+  "timestamp": "20250604_090456",
+  "args": {
+    "start": 0,
+    "n_trials": 64620,
+    "shuffle": false,
+    "seed": 123,
+    "prompt_type": "base",
+    "anchors": false,
+    "model": "gpt-4o",
+    "run_name": "baseline_360",
+    "human_data": "360"
+  },
+  "completion_timestamp": "20250606_042816"
+}
