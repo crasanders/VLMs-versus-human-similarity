@@ -43,6 +43,8 @@ ROCKS_TABLE_PATH = Path("data") / "360_rocks_table.csv"
 PUBLISHED_HUMAN_MDS_PATH = Path("rotated_mds_rocks360.txt")
 GPT4O_ENCOURAGE_MDS_PATH = Path("data") / "MDS Solutions" / "rotated_encourage_8d_onto_norm7.txt"
 GPT4O_BASELINE_MDS_PATH = Path("data") / "MDS Solutions" / "rotated_baseline_8d_onto_norm7.txt"
+GPT4O_ENCOURAGE_ML_MDS_PATH = Path("data") / "MDS Solutions" / "ml_encourage_8d_rotated.txt"
+GPT4O_BASELINE_ML_MDS_PATH = Path("data") / "MDS Solutions" / "ml_baseline_8d_rotated.txt"
 DEFAULT_SUBSAMPLING_DIR = Path("output") / "human_mds_subsampling"
 
 N_IGNEOUS = 120
@@ -382,6 +384,17 @@ def compute_benchmarks(
         rows.append({"model": label, "source": "recomputed", "mds_file": path.as_posix(), **core})
         rows.append({"model": label, "source": "recomputed", "mds_file": path.as_posix(), **weighted})
 
+    for label, path in [
+        ("GPT-4o (encourage middle, ML-MDS)", GPT4O_ENCOURAGE_ML_MDS_PATH),
+        ("GPT-4o (baseline, ML-MDS)", GPT4O_BASELINE_ML_MDS_PATH),
+    ]:
+        if path.exists():
+            coords_120 = np.loadtxt(path)[:N_IGNEOUS]
+            core = fit_core_gcm(coords_120, probs, freqs, train_idx, m_cat)
+            weighted = fit_weighted_8d_gcm(coords_120, probs, freqs, train_idx, m_cat, core_fit=core, seed=seed)
+            rows.append({"model": label, "source": "recomputed_ml", "mds_file": path.as_posix(), **core})
+            rows.append({"model": label, "source": "recomputed_ml", "mds_file": path.as_posix(), **weighted})
+
     for item in TABLE2_CORE_BENCHMARKS:
         if item["model"].startswith(("Human", "GPT-4o")):
             continue
@@ -672,6 +685,14 @@ def generate_plots(fits_df: pd.DataFrame, bench_df: pd.DataFrame, plots_dir: Pat
     # 5. Core GCM zoomed onto ML-MDS (Nosofsky et al. 2018): 1x2 panels (BIC, %Var)
     ml_core = core_df[core_df["mds_mode"] == "ml"]
     if not ml_core.empty:
+        ml_refs = list(refs)
+        if "GPT-4o (encourage middle, ML-MDS)" in core_b.index:
+            ml_refs[0] = {
+                "label": "GPT-4o (encourage, ML-MDS)",
+                "row": core_b.loc["GPT-4o (encourage middle, ML-MDS)"],
+                "color": GPT4O_COLOR,
+                "ls": "--",
+            }
         fig, axes = plt.subplots(1, 2, figsize=(13.2, 5.8))
         for ax, (col, ylabel, is_k, title) in zip(
             axes,
@@ -681,7 +702,7 @@ def generate_plots(fits_df: pd.DataFrame, bench_df: pd.DataFrame, plots_dir: Pat
             ],
         ):
             _plot_curve(ax, ml_core, col, ML_COLOR, "Subsampled Human (ML-MDS, mean ± 1 SD)", rng_jitter, marker="D")
-            for spec in refs:
+            for spec in ml_refs:
                 val = float(spec["row"][col])
                 ax.axhline(
                     val,
