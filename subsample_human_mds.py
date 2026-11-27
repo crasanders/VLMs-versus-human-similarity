@@ -4,9 +4,10 @@ For each sampling percentage in 10%, 20%, ..., 100% and 10 replicates per percen
 1. Sample individual pairwise trial ratings without replacement from the 253 valid
    (non-xlow) subjects in `data/Rocks-360 Similarity-Judgment Study/individual subject data`,
    enforcing at least 1 filled cell per row/column and a connected pair graph.
-2. Fit an 8D weighted SMACOF MDS solution (metric and/or nonmetric with primary ties
-   and weighted metric warm-start), assigning weight 0 to missing pairs and keeping the
-   lowest Stress-1 configuration across `n_init` random restarts.
+2. Fit an 8D weighted SMACOF MDS solution (metric and/or nonmetric with primary ties;
+   by default nonmetric MDS is initialized from the converged metric MDS solution for
+   each replicate, which yields lower Stress-1 and much higher replicate stability),
+   assigning weight 0 to missing pairs.
 3. Rotate the 8D solution via orthogonal Procrustes onto the 6 z-scored human
    dimension ratings from `data/360_rocks_table.csv` (padded with 2 zero columns),
    preserving all pairwise Euclidean distances.
@@ -296,6 +297,7 @@ def fit_weighted_smacof(
     eps: float = 1e-6,
     metric_warmup: int = 50,
     mds_seed: int = 0,
+    init_X: np.ndarray | None = None,
 ) -> dict:
     """Fit 8D weighted metric or nonmetric SMACOF with missing-pair weights set to 0."""
     if mode not in MODE_IDS:
@@ -323,19 +325,24 @@ def fit_weighted_smacof(
     base_order = np.argsort(dissim_nonmetric, kind="mergesort")
     groups = np.split(base_order, np.cumsum(counts_u)[:-1])
 
-    init_seeds = np.random.SeedSequence(mds_seed).spawn(n_init)
+    if init_X is not None:
+        init_configs: list[tuple[int, np.ndarray]] = [(0, init_X.astype(float, copy=True))]
+    else:
+        init_seeds = np.random.SeedSequence(mds_seed).spawn(n_init)
+        init_configs = [
+            (init_idx, np.random.default_rng(child_seed).normal(size=(n, n_components)))
+            for init_idx, child_seed in enumerate(init_seeds)
+        ]
 
     best_overall_X: np.ndarray | None = None
     best_overall_stress = np.inf
     best_overall_init = -1
     best_overall_iter = 0
 
-    for init_idx, child_seed in enumerate(init_seeds):
-        rng = np.random.default_rng(child_seed)
-        X = rng.normal(size=(n, n_components))
-        X -= X.mean(axis=0)
+    for init_idx, X in init_configs:
+        X = X - X.mean(axis=0)
 
-        if mode == "nonmetric" and metric_warmup > 0:
+        if init_X is None and mode == "nonmetric" and metric_warmup > 0:
             for _ in range(metric_warmup):
                 d_obs = euclidean_distances(X)[obs_i, obs_j]
                 X = _smacof_guttman_step(X, V_pinv, obs_i, obs_j, d_obs, dhat_metric)
@@ -432,6 +439,7 @@ def run_single_replicate(
     eps: float,
     metric_warmup: int,
     overwrite: bool,
+    init_from_metric: bool = True,
 ) -> tuple[dict, bool]:
     """Run (or load cached) subsampling, weighted MDS, Procrustes rotation, and export."""
     mode_dir = output_dir / mode
@@ -447,16 +455,40 @@ def run_single_replicate(
     mds_seed = make_seed(base_seed, pct, rep, MODE_IDS[mode])
 
     sample = subsample_similarity_matrix(trials, pct=pct, sample_seed=sample_seed)
+    init_X: np.ndarray | None = None
+    effective_n_init = n_init
+    if mode == "nonmetric" and init_from_metric:
+        metric_csv = output_dir / "metric" / "mds_solutions" / f"mds_pct{pct:03d}_rep{rep:02d}.csv"
+        if metric_csv.exists():
+            metric_df = pd.read_csv(metric_csv, index_col=0)
+            init_X = metric_df[[f"Dim {d + 1}" for d in range(N_DIMENSIONS)]].to_numpy(dtype=float)
+        else:
+            metric_seed = make_seed(base_seed, pct, rep, MODE_IDS["metric"])
+            metric_res = fit_weighted_smacof(
+                mean_sim=sample["mean_sim"],
+                mask=sample["mask"],
+                mode="metric",
+                n_components=N_DIMENSIONS,
+                n_init=n_init,
+                max_iter=max_iter,
+                eps=eps,
+                metric_warmup=0,
+                mds_seed=metric_seed,
+            )
+            init_X = metric_res["X"]
+        effective_n_init = 1
+
     mds_res = fit_weighted_smacof(
         mean_sim=sample["mean_sim"],
         mask=sample["mask"],
         mode=mode,
         n_components=N_DIMENSIONS,
-        n_init=n_init,
+        n_init=effective_n_init,
         max_iter=max_iter,
         eps=eps,
         metric_warmup=metric_warmup,
         mds_seed=mds_seed,
+        init_X=init_X,
     )
     rotated = rotate_orthogonal_procrustes(mds_res["X"], target_8d)
 
@@ -485,7 +517,7 @@ def run_single_replicate(
         "min_row_degree": int(sample["min_row_degree"]),
         "is_connected": bool(sample["is_connected"]),
         "resample_attempts": int(sample["resample_attempts"]),
-        "n_init": int(n_init),
+        "n_init": int(effective_n_init),
         "best_init": int(mds_res["best_init"]),
         "n_iter": int(mds_res["n_iter"]),
         "stress1_objective": float(mds_res["stress1_objective"]),
@@ -607,6 +639,11 @@ def parse_args() -> argparse.Namespace:
         help=f"Output root directory (default: {DEFAULT_OUTPUT_DIR})",
     )
     parser.add_argument(
+        "--no-init-from-metric",
+        action="store_true",
+        help="Initialize nonmetric MDS from random starts instead of converged metric MDS solutions",
+    )
+    parser.add_argument(
         "--overwrite",
         action="store_true",
         help="Recompute even if cached CSV and meta JSON already exist",
@@ -671,38 +708,53 @@ def main() -> None:
             f"reps={args.reps}, n_init={args.n_init}, max_iter={args.max_iter}, n_jobs={args.n_jobs})..."
         )
 
-        gen = Parallel(n_jobs=args.n_jobs, return_as="generator_unordered")(
-            delayed(run_single_replicate)(
-                trials=trials,
-                rock_ids=rock_ids,
-                ratings_arr=ratings_arr,
-                target_8d=target_8d,
-                published_human_pdist=published_human_pdist,
-                output_dir=args.output_dir,
-                mode=mode,
-                pct=pct,
-                rep=rep,
-                base_seed=args.seed,
-                n_init=args.n_init,
-                max_iter=args.max_iter,
-                eps=args.eps,
-                metric_warmup=args.metric_warmup,
-                overwrite=args.overwrite,
-            )
-            for mode, pct, rep in pending_tasks
+        init_from_metric = not args.no_init_from_metric
+        # Run metric before nonmetric when initializing nonmetric from converged metric solutions
+        task_batches = (
+            [
+                [t for t in pending_tasks if t[0] == "metric"],
+                [t for t in pending_tasks if t[0] == "nonmetric"],
+            ]
+            if (args.mds_mode == "both" and init_from_metric)
+            else [pending_tasks]
         )
 
-        for meta, from_cache in gen:
-            results.append(meta)
-            tag = "cached" if from_cache else "done"
-            print(
-                f"[{len(results):3d}/{len(tasks):3d}] {tag:6s} | {meta['mds_mode']:9s} pct={meta['pct']:3d}% "
-                f"rep={meta['rep']:02d} | filled={meta['pct_filled_pairs']:5.1f}% "
-                f"deg_min={meta['min_row_degree']:3d} | stress1={meta['stress1_objective']:.4f} "
-                f"dist_r={meta['dist_r_vs_published_human']:.4f} mean_r6={meta['mean_r_dims1_6']:.3f} "
-                f"({meta['elapsed_sec']:.1f}s)",
-                flush=True,
+        for batch in task_batches:
+            if not batch:
+                continue
+            gen = Parallel(n_jobs=args.n_jobs, return_as="generator_unordered")(
+                delayed(run_single_replicate)(
+                    trials=trials,
+                    rock_ids=rock_ids,
+                    ratings_arr=ratings_arr,
+                    target_8d=target_8d,
+                    published_human_pdist=published_human_pdist,
+                    output_dir=args.output_dir,
+                    mode=mode,
+                    pct=pct,
+                    rep=rep,
+                    base_seed=args.seed,
+                    n_init=args.n_init,
+                    max_iter=args.max_iter,
+                    eps=args.eps,
+                    metric_warmup=args.metric_warmup,
+                    overwrite=args.overwrite,
+                    init_from_metric=init_from_metric,
+                )
+                for mode, pct, rep in batch
             )
+
+            for meta, from_cache in gen:
+                results.append(meta)
+                tag = "cached" if from_cache else "done"
+                print(
+                    f"[{len(results):3d}/{len(tasks):3d}] {tag:6s} | {meta['mds_mode']:9s} pct={meta['pct']:3d}% "
+                    f"rep={meta['rep']:02d} | filled={meta['pct_filled_pairs']:5.1f}% "
+                    f"deg_min={meta['min_row_degree']:3d} | stress1={meta['stress1_objective']:.4f} "
+                    f"dist_r={meta['dist_r_vs_published_human']:.4f} mean_r6={meta['mean_r_dims1_6']:.3f} "
+                    f"({meta['elapsed_sec']:.1f}s)",
+                    flush=True,
+                )
 
     all_df = (
         pd.DataFrame(results)[SUMMARY_COLUMNS]
