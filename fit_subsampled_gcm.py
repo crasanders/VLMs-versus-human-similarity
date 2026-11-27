@@ -62,6 +62,7 @@ TABLE2_CORE_BENCHMARKS = [
 ]
 
 # Plotting colors
+ML_COLOR = "#DC2626"
 METRIC_COLOR = "#2563EB"
 NONMETRIC_COLOR = "#D97706"
 WEIGHTED_COLOR = "#059669"
@@ -514,6 +515,8 @@ def generate_plots(fits_df: pd.DataFrame, bench_df: pd.DataFrame, plots_dir: Pat
     ]
     for ax_idx, (col, ylabel, is_k, title) in enumerate(panels):
         ax = axes[ax_idx]
+        if not core_df[core_df["mds_mode"] == "ml"].empty:
+            _plot_curve(ax, core_df[core_df["mds_mode"] == "ml"], col, ML_COLOR, "Subsampled Human (ML-MDS, Nosofsky 2018)", rng_jitter, marker="D")
         _plot_curve(ax, core_df[core_df["mds_mode"] == "metric"], col, METRIC_COLOR, "Subsampled Human (Metric SMACOF)", rng_jitter)
         _plot_curve(ax, core_df[core_df["mds_mode"] == "nonmetric"], col, NONMETRIC_COLOR, "Subsampled Human (Nonmetric SMACOF)", rng_jitter, marker="s")
         for spec in refs[:4]:
@@ -602,6 +605,8 @@ def generate_plots(fits_df: pd.DataFrame, bench_df: pd.DataFrame, plots_dir: Pat
             ("pct_var", "% Variance Accounted For (higher is better)", False, "B. Weighted 8D GCM %Var"),
         ],
     ):
+        if not w8_df[w8_df["mds_mode"] == "ml"].empty:
+            _plot_curve(ax, w8_df[w8_df["mds_mode"] == "ml"], col, ML_COLOR, "Subsampled Human (ML-MDS, Nosofsky 2018)", rng_jitter, marker="D")
         _plot_curve(ax, w8_df[w8_df["mds_mode"] == "metric"], col, METRIC_COLOR, "Subsampled Human (Metric SMACOF)", rng_jitter)
         _plot_curve(ax, w8_df[w8_df["mds_mode"] == "nonmetric"], col, NONMETRIC_COLOR, "Subsampled Human (Nonmetric SMACOF)", rng_jitter, marker="s")
         for b_name, color, ls in [
@@ -664,6 +669,57 @@ def generate_plots(fits_df: pd.DataFrame, bench_df: pd.DataFrame, plots_dir: Pat
     fig.tight_layout(rect=(0, 0.14, 1, 0.94))
     save_fig(fig, plots_dir / "gcm_core_vs_weighted_comparison")
 
+    # 5. Core GCM zoomed onto ML-MDS (Nosofsky et al. 2018): 1x2 panels (BIC, %Var)
+    ml_core = core_df[core_df["mds_mode"] == "ml"]
+    if not ml_core.empty:
+        fig, axes = plt.subplots(1, 2, figsize=(13.2, 5.8))
+        for ax, (col, ylabel, is_k, title) in zip(
+            axes,
+            [
+                ("BIC", "BIC (lower is better)", True, "A. Core GCM BIC (ML-MDS, Nosofsky 2018)"),
+                ("pct_var", "% Variance Accounted For (higher is better)", False, "B. Core GCM %Var (ML-MDS, Nosofsky 2018)"),
+            ],
+        ):
+            _plot_curve(ax, ml_core, col, ML_COLOR, "Subsampled Human (ML-MDS, mean ± 1 SD)", rng_jitter, marker="D")
+            for spec in refs:
+                val = float(spec["row"][col])
+                ax.axhline(
+                    val,
+                    color=spec["color"],
+                    linestyle=spec["ls"],
+                    linewidth=1.6,
+                    label=_ref_legend_label(spec["label"], spec["row"]),
+                    zorder=2.5,
+                )
+            _finish_axis(ax, ylabel, title, is_bic=is_k)
+            m10 = float(ml_core.loc[ml_core["pct"] == 10, col].mean())
+            m100 = float(ml_core.loc[ml_core["pct"] == 100, col].mean())
+            fmt10 = f"{m10:,.0f}" if col != "pct_var" else f"{m10:.1f}%"
+            fmt100 = f"{m100:,.0f}" if col != "pct_var" else f"{m100:.1f}%"
+            ax.annotate(
+                fmt10, (10, m10), textcoords="offset points",
+                xytext=(8, 6 if col == "BIC" else -14),
+                fontsize=8.5, fontweight="bold", color=ML_COLOR, bbox=pill, zorder=6,
+            )
+            ax.annotate(
+                fmt100, (100, m100), textcoords="offset points",
+                xytext=(-2, 9 if col == "BIC" else -15), ha="right",
+                fontsize=8.5, fontweight="bold", color=ML_COLOR, bbox=pill, zorder=6,
+            )
+
+        handles, labels = axes[0].get_legend_handles_labels()
+        fig.legend(handles, labels, loc="lower center", ncol=2, frameon=True, facecolor=SURFACE, edgecolor=GRID, fontsize=8.8, bbox_to_anchor=(0.5, -0.02))
+        fig.suptitle(
+            "Core GCM (8D, P = 3): ML-MDS Convergence vs. VLM & Published Human Benchmarks",
+            x=0.01,
+            ha="left",
+            fontsize=13.5,
+            fontweight="bold",
+            color=TEXT_PRIMARY,
+        )
+        fig.tight_layout(rect=(0, 0.14, 1, 0.94))
+        save_fig(fig, plots_dir / "gcm_core_ml_zoom")
+
 
 def format_summary_table(fits_df: pd.DataFrame) -> pd.DataFrame:
     """Compute per-(gcm_model, mds_mode, pct) mean and SD summary table."""
@@ -699,6 +755,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--n-jobs", type=int, default=-1, help="Number of joblib parallel workers (default: -1)")
     parser.add_argument("--seed", type=int, default=42, help="Base seed for Weighted 8D random restarts (default: 42)")
     parser.add_argument("--replot-only", action="store_true", help="Regenerate plots from existing CSVs without refitting GCM")
+    parser.add_argument("--only-missing", action="store_true", help="Fit only MDS rows missing from gcm_fits_all.csv and merge")
     return parser.parse_args()
 
 
@@ -732,7 +789,18 @@ def main() -> None:
     )
 
     mds_summary_df = pd.read_csv(args.subsampling_dir / "summary_all.csv")
-    meta_rows = mds_summary_df.to_dict(orient="records")
+    existing_fits_df = pd.read_csv(fits_csv) if (args.only_missing and fits_csv.exists()) else None
+    if existing_fits_df is not None:
+        done_keys = set(
+            zip(existing_fits_df["mds_mode"], existing_fits_df["pct"].astype(int), existing_fits_df["rep"].astype(int))
+        )
+        meta_rows = [
+            row
+            for row in mds_summary_df.to_dict(orient="records")
+            if (row["mds_mode"], int(row["pct"]), int(row["rep"])) not in done_keys
+        ]
+    else:
+        meta_rows = mds_summary_df.to_dict(orient="records")
     print(f"\nFitting Core (P=3) and Weighted 8D (P=10) GCM across {len(meta_rows)} MDS spaces (n_jobs={args.n_jobs})...")
 
     nested_results = Parallel(n_jobs=args.n_jobs)(
@@ -748,7 +816,14 @@ def main() -> None:
         for row in meta_rows
     )
     flat_rows = [item for pair in nested_results for item in pair]
-    fits_df = pd.DataFrame(flat_rows).sort_values(["gcm_model", "mds_mode", "pct", "rep"]).reset_index(drop=True)
+    new_fits_df = pd.DataFrame(flat_rows)
+    if existing_fits_df is not None and not new_fits_df.empty:
+        fits_df = pd.concat([existing_fits_df, new_fits_df], ignore_index=True)
+    elif existing_fits_df is not None:
+        fits_df = existing_fits_df
+    else:
+        fits_df = new_fits_df
+    fits_df = fits_df.sort_values(["gcm_model", "mds_mode", "pct", "rep"]).reset_index(drop=True)
     fits_df.to_csv(fits_csv, index=False)
 
     summary_df = format_summary_table(fits_df)

@@ -42,7 +42,7 @@ from joblib import Parallel, delayed
 import numpy as np
 import pandas as pd
 from scipy.linalg import orthogonal_procrustes
-from scipy.optimize import isotonic_regression
+from scipy.optimize import isotonic_regression, minimize
 from scipy.sparse.csgraph import connected_components
 from scipy.spatial.distance import pdist
 from sklearn.metrics import euclidean_distances
@@ -102,7 +102,7 @@ SUMMARY_COLUMNS = [
 ]
 
 VALID_SUBJECT_PATTERN = re.compile(r"^rocks_mds(\d+)\.txt$")
-MODE_IDS = {"metric": 1, "nonmetric": 2}
+MODE_IDS = {"metric": 1, "nonmetric": 2, "ml": 3}
 
 
 def atomic_write_text(path: Path, text: str) -> None:
@@ -231,6 +231,7 @@ def subsample_similarity_matrix(
         total_pairs = n_rocks * (n_rocks - 1) // 2
         return {
             "mean_sim": mean_sim,
+            "cnts": cnts,
             "mask": mask,
             "n_ratings": n_ratings,
             "n_filled_pairs": n_filled_pairs,
@@ -404,6 +405,96 @@ def fit_weighted_smacof(
     }
 
 
+def fit_ml_mds(
+    mean_sim: np.ndarray,
+    cnts: np.ndarray,
+    mask: np.ndarray,
+    n_components: int = N_DIMENSIONS,
+    n_init: int = 5,
+    max_iter: int = 1000,
+    mds_seed: int = 0,
+) -> dict:
+    """Fit 8D Maximum-Likelihood MDS (Nosofsky et al., 2018, Eqs. 3-4).
+
+    Under i.i.d. Gaussian trial noise with linear similarity-distance mapping
+    s_hat_ij = u - v * d_ij (absorbing v > 0 into the coordinate scale of X),
+    minimizing individual-trial SSD is exact count-weighted least squares:
+        min_{X, u}  0.5 * sum_{i < j} n_ij * ((u - d_ij) - s_bar_ij)^2
+    solved with L-BFGS-B using the exact analytic gradient.
+    """
+    n = mean_sim.shape[0]
+    obs_i, obs_j = np.where(np.triu(mask, 1))
+    obs_sim = mean_sim[obs_i, obs_j]
+    w_obs = cnts[obs_i, obs_j].astype(float)
+
+    dissim_metric = 9.0 - obs_sim
+    dissim_nonmetric = 10.0 - obs_sim
+    _, counts_u = np.unique(dissim_nonmetric, return_counts=True)
+    base_order = np.argsort(dissim_nonmetric, kind="mergesort")
+    groups = np.split(base_order, np.cumsum(counts_u)[:-1])
+
+    def obj_and_grad(params: np.ndarray) -> tuple[float, np.ndarray]:
+        u = params[0]
+        X = params[1:].reshape(n, n_components)
+        D = euclidean_distances(X)
+        d_obs = D[obs_i, obs_j]
+        resid = (u - d_obs) - obs_sim
+        loss = 0.5 * float(np.sum(w_obs * resid ** 2))
+        grad_u = float(np.sum(w_obs * resid))
+
+        m_off = (w_obs * resid) / np.maximum(d_obs, 1e-12)
+        M = np.zeros((n, n), dtype=float)
+        M[obs_i, obs_j] = m_off
+        M[obs_j, obs_i] = m_off
+        M[np.arange(n), np.arange(n)] = -M.sum(axis=1)
+        grad_X = M @ X
+        return loss, np.concatenate([[grad_u], grad_X.ravel()])
+
+    init_seeds = np.random.SeedSequence(mds_seed).spawn(n_init)
+    best_X: np.ndarray | None = None
+    best_u = 9.0
+    best_loss = np.inf
+    best_init = -1
+    best_iter = 0
+
+    for init_idx, child_seed in enumerate(init_seeds):
+        rng = np.random.default_rng(child_seed)
+        X0 = rng.normal(scale=2.0, size=(n, n_components))
+        X0 -= X0.mean(axis=0)
+        p0 = np.concatenate([[9.0], X0.ravel()])
+        res = minimize(
+            obj_and_grad,
+            p0,
+            method="L-BFGS-B",
+            jac=True,
+            options={"maxiter": max_iter, "ftol": 1e-12, "gtol": 1e-6},
+        )
+        if res.fun < best_loss:
+            best_loss = float(res.fun)
+            best_u = float(res.x[0])
+            best_X = res.x[1:].reshape(n, n_components)
+            best_X = best_X - best_X.mean(axis=0)
+            best_init = init_idx
+            best_iter = int(res.nit)
+
+    assert best_X is not None
+    final_d_obs = euclidean_distances(best_X)[obs_i, obs_j]
+    resid_final = (best_u - final_d_obs) - obs_sim
+    denom_d = max(float(np.sum(w_obs * final_d_obs ** 2)), 1e-12)
+    stress1_ml = float(np.sqrt(np.sum(w_obs * resid_final ** 2) / denom_d))
+    stress1_metric = compute_metric_stress1(final_d_obs, dissim_metric)
+    stress1_nonmetric_primary, _ = compute_nonmetric_primary_stress1(final_d_obs, groups)
+
+    return {
+        "X": best_X,
+        "stress1_objective": stress1_ml,
+        "stress1_metric": float(stress1_metric),
+        "stress1_nonmetric_primary": float(stress1_nonmetric_primary),
+        "best_init": int(best_init),
+        "n_iter": int(best_iter),
+    }
+
+
 def rotate_orthogonal_procrustes(solution: np.ndarray, target_8d: np.ndarray) -> np.ndarray:
     """Orthogonally rotate/reflect `solution` onto `target_8d`, preserving distances."""
     target = target_8d - target_8d.mean(axis=0)
@@ -457,39 +548,50 @@ def run_single_replicate(
     sample = subsample_similarity_matrix(trials, pct=pct, sample_seed=sample_seed)
     init_X: np.ndarray | None = None
     effective_n_init = n_init
-    if mode == "nonmetric" and init_from_metric:
-        metric_csv = output_dir / "metric" / "mds_solutions" / f"mds_pct{pct:03d}_rep{rep:02d}.csv"
-        if metric_csv.exists():
-            metric_df = pd.read_csv(metric_csv, index_col=0)
-            init_X = metric_df[[f"Dim {d + 1}" for d in range(N_DIMENSIONS)]].to_numpy(dtype=float)
-        else:
-            metric_seed = make_seed(base_seed, pct, rep, MODE_IDS["metric"])
-            metric_res = fit_weighted_smacof(
-                mean_sim=sample["mean_sim"],
-                mask=sample["mask"],
-                mode="metric",
-                n_components=N_DIMENSIONS,
-                n_init=n_init,
-                max_iter=max_iter,
-                eps=eps,
-                metric_warmup=0,
-                mds_seed=metric_seed,
-            )
-            init_X = metric_res["X"]
-        effective_n_init = 1
+    if mode == "ml":
+        mds_res = fit_ml_mds(
+            mean_sim=sample["mean_sim"],
+            cnts=sample["cnts"],
+            mask=sample["mask"],
+            n_components=N_DIMENSIONS,
+            n_init=n_init,
+            max_iter=max_iter,
+            mds_seed=mds_seed,
+        )
+    else:
+        if mode == "nonmetric" and init_from_metric:
+            metric_csv = output_dir / "metric" / "mds_solutions" / f"mds_pct{pct:03d}_rep{rep:02d}.csv"
+            if metric_csv.exists():
+                metric_df = pd.read_csv(metric_csv, index_col=0)
+                init_X = metric_df[[f"Dim {d + 1}" for d in range(N_DIMENSIONS)]].to_numpy(dtype=float)
+            else:
+                metric_seed = make_seed(base_seed, pct, rep, MODE_IDS["metric"])
+                metric_res = fit_weighted_smacof(
+                    mean_sim=sample["mean_sim"],
+                    mask=sample["mask"],
+                    mode="metric",
+                    n_components=N_DIMENSIONS,
+                    n_init=n_init,
+                    max_iter=max_iter,
+                    eps=eps,
+                    metric_warmup=0,
+                    mds_seed=metric_seed,
+                )
+                init_X = metric_res["X"]
+            effective_n_init = 1
 
-    mds_res = fit_weighted_smacof(
-        mean_sim=sample["mean_sim"],
-        mask=sample["mask"],
-        mode=mode,
-        n_components=N_DIMENSIONS,
-        n_init=effective_n_init,
-        max_iter=max_iter,
-        eps=eps,
-        metric_warmup=metric_warmup,
-        mds_seed=mds_seed,
-        init_X=init_X,
-    )
+        mds_res = fit_weighted_smacof(
+            mean_sim=sample["mean_sim"],
+            mask=sample["mask"],
+            mode=mode,
+            n_components=N_DIMENSIONS,
+            n_init=effective_n_init,
+            max_iter=max_iter,
+            eps=eps,
+            metric_warmup=metric_warmup,
+            mds_seed=mds_seed,
+            init_X=init_X,
+        )
     rotated = rotate_orthogonal_procrustes(mds_res["X"], target_8d)
 
     mds_df = pd.DataFrame(
@@ -561,9 +663,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--mds-mode",
-        choices=["metric", "nonmetric", "both"],
-        default="both",
-        help="Weighted SMACOF formulation to run (default: both)",
+        choices=["metric", "nonmetric", "ml", "both", "all"],
+        default="all",
+        help="MDS formulation to run: metric, nonmetric, ml (Nosofsky et al. 2018 ML-MDS), both (metric+nonmetric), or all (default: all)",
     )
     parser.add_argument(
         "--percentages",
@@ -659,7 +761,12 @@ def main() -> None:
     if args.reps < 1 or args.n_init < 1 or args.max_iter < 1:
         raise ValueError("reps, n_init, and max_iter must be >= 1")
 
-    modes = ["metric", "nonmetric"] if args.mds_mode == "both" else [args.mds_mode]
+    if args.mds_mode == "both":
+        modes = ["metric", "nonmetric"]
+    elif args.mds_mode == "all":
+        modes = ["metric", "nonmetric", "ml"]
+    else:
+        modes = [args.mds_mode]
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     tasks = [(mode, pct, rep) for mode in modes for pct in args.percentages for rep in range(args.reps)]
@@ -712,10 +819,10 @@ def main() -> None:
         # Run metric before nonmetric when initializing nonmetric from converged metric solutions
         task_batches = (
             [
-                [t for t in pending_tasks if t[0] == "metric"],
+                [t for t in pending_tasks if t[0] != "nonmetric"],
                 [t for t in pending_tasks if t[0] == "nonmetric"],
             ]
-            if (args.mds_mode == "both" and init_from_metric)
+            if ("metric" in modes and "nonmetric" in modes and init_from_metric)
             else [pending_tasks]
         )
 
@@ -765,8 +872,19 @@ def main() -> None:
         mode_df = all_df[all_df["mds_mode"] == mode].reset_index(drop=True)
         atomic_write_dataframe(mode_df, args.output_dir / mode / "summary.csv", index=False)
 
-    if args.mds_mode == "both":
-        atomic_write_dataframe(all_df, args.output_dir / "summary_all.csv", index=False)
+    # Always rebuild summary_all.csv from all mode summary.csv files present on disk
+    existing_summaries = [
+        pd.read_csv(args.output_dir / m / "summary.csv")
+        for m in ("metric", "nonmetric", "ml")
+        if (args.output_dir / m / "summary.csv").exists()
+    ]
+    if existing_summaries:
+        combined_df = (
+            pd.concat(existing_summaries, ignore_index=True)[SUMMARY_COLUMNS]
+            .sort_values(["mds_mode", "pct", "rep"])
+            .reset_index(drop=True)
+        )
+        atomic_write_dataframe(combined_df, args.output_dir / "summary_all.csv", index=False)
 
     total_wall = time.perf_counter() - t_start
     print(f"\nCompleted {len(tasks)} tasks in {total_wall:.1f}s wall time.")
