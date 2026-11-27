@@ -23,6 +23,6 @@
   "r_organization": 0.7304289805449462,
   "r_munsell_chroma": 0.8463563097144858,
   "mean_r_dims1_6": 0.763789731452047,
-  "elapsed_sec": 91.07748380000703,
+  "elapsed_sec": 85.6213684999966,
   "mds_file": "output/human_mds_subsampling/ml/mds_solutions/mds_pct060_rep03.csv"
 }

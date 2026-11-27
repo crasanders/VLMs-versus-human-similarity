@@ -278,7 +278,7 @@ def _smacof_guttman_step(
 ) -> np.ndarray:
     """Perform one weighted SMACOF Guttman majorization update and center X."""
     n = X.shape[0]
-    ratio = dhat_obs / np.maximum(d_obs, 1e-12)
+    ratio = np.where(d_obs > 1e-12, dhat_obs / np.maximum(d_obs, 1e-12), 0.0)
     B = np.zeros((n, n), dtype=float)
     B[obs_i, obs_j] = -ratio
     B[obs_j, obs_i] = -ratio
@@ -442,7 +442,7 @@ def fit_ml_mds(
         loss = 0.5 * float(np.sum(w_obs * resid ** 2))
         grad_u = float(np.sum(w_obs * resid))
 
-        m_off = (w_obs * resid) / np.maximum(d_obs, 1e-12)
+        m_off = np.where(d_obs > 1e-12, (w_obs * resid) / np.maximum(d_obs, 1e-12), 0.0)
         M = np.zeros((n, n), dtype=float)
         M[obs_i, obs_j] = m_off
         M[obs_j, obs_i] = m_off
@@ -561,7 +561,12 @@ def run_single_replicate(
     else:
         if mode == "nonmetric" and init_from_metric:
             metric_csv = output_dir / "metric" / "mds_solutions" / f"mds_pct{pct:03d}_rep{rep:02d}.csv"
-            if metric_csv.exists():
+            metric_meta_path = output_dir / "metric" / "meta" / f"meta_pct{pct:03d}_rep{rep:02d}.json"
+            metric_matches_seed = False
+            if metric_csv.exists() and metric_meta_path.exists():
+                metric_meta = json.loads(metric_meta_path.read_text(encoding="utf-8"))
+                metric_matches_seed = int(metric_meta.get("sample_seed", -1)) == int(sample_seed)
+            if metric_csv.exists() and metric_matches_seed:
                 metric_df = pd.read_csv(metric_csv, index_col=0)
                 init_X = metric_df[[f"Dim {d + 1}" for d in range(N_DIMENSIONS)]].to_numpy(dtype=float)
             else:
@@ -689,8 +694,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-iter",
         type=int,
-        default=1000,
-        help="Maximum SMACOF iterations per restart (default: 1000)",
+        default=10000,
+        help="Maximum SMACOF / L-BFGS-B iterations per restart (default: 10000)",
     )
     parser.add_argument(
         "--eps",

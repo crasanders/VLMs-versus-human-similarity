@@ -45,6 +45,9 @@ GPT4O_ENCOURAGE_MDS_PATH = Path("data") / "MDS Solutions" / "rotated_encourage_8
 GPT4O_BASELINE_MDS_PATH = Path("data") / "MDS Solutions" / "rotated_baseline_8d_onto_norm7.txt"
 GPT4O_ENCOURAGE_ML_MDS_PATH = Path("data") / "MDS Solutions" / "ml_encourage_8d_rotated.txt"
 GPT4O_BASELINE_ML_MDS_PATH = Path("data") / "MDS Solutions" / "ml_baseline_8d_rotated.txt"
+LLAMA4_ML_MDS_PATH = Path("data") / "MDS Solutions" / "ml_llama4_scout_8d_rotated.txt"
+QWEN72B_ML_MDS_PATH = Path("data") / "MDS Solutions" / "ml_qwen25vl_72b_8d_rotated.txt"
+GEMMA27B_ML_MDS_PATH = Path("data") / "MDS Solutions" / "ml_gemma3_27b_8d_rotated.txt"
 DEFAULT_SUBSAMPLING_DIR = Path("output") / "human_mds_subsampling"
 
 N_IGNEOUS = 120
@@ -278,7 +281,7 @@ def fit_weighted_8d_gcm(
             )
         )
 
-    bounds = [(0.0, 1000.0)] * N_DIMENSIONS + [(1e-3, 50.0), (0.0, 0.99)]
+    bounds = [(0.0, 10000.0)] * N_DIMENSIONS + [(1e-3, 50.0), (0.0, 0.99)]
     best_x: np.ndarray | None = None
     best_fun = np.inf
     for x0 in starts:
@@ -387,6 +390,9 @@ def compute_benchmarks(
     for label, path in [
         ("GPT-4o (encourage middle, ML-MDS)", GPT4O_ENCOURAGE_ML_MDS_PATH),
         ("GPT-4o (baseline, ML-MDS)", GPT4O_BASELINE_ML_MDS_PATH),
+        ("Llama-4-Scout-109B/17B (ML-MDS)", LLAMA4_ML_MDS_PATH),
+        ("Qwen2.5-VL-72B (ML-MDS)", QWEN72B_ML_MDS_PATH),
+        ("Gemma-3-27B (ML-MDS)", GEMMA27B_ML_MDS_PATH),
     ]:
         if path.exists():
             coords_120 = np.loadtxt(path)[:N_IGNEOUS]
@@ -686,13 +692,19 @@ def generate_plots(fits_df: pd.DataFrame, bench_df: pd.DataFrame, plots_dir: Pat
     ml_core = core_df[core_df["mds_mode"] == "ml"]
     if not ml_core.empty:
         ml_refs = list(refs)
-        if "GPT-4o (encourage middle, ML-MDS)" in core_b.index:
-            ml_refs[0] = {
-                "label": "GPT-4o (encourage, ML-MDS)",
-                "row": core_b.loc["GPT-4o (encourage middle, ML-MDS)"],
-                "color": GPT4O_COLOR,
-                "ls": "--",
-            }
+        ml_replacements = [
+            (0, "GPT-4o (encourage middle, ML-MDS)", "GPT-4o (encourage, ML-MDS)", GPT4O_COLOR, "--"),
+            (1, "Llama-4-Scout-109B/17B (ML-MDS)", "Llama-4-Scout (ML-MDS)", LLAMA_COLOR, "-."),
+            (3, "Qwen2.5-VL-72B (ML-MDS)", "Qwen2.5-VL-72B (ML-MDS)", QWEN_COLOR, (0, (5, 3))),
+        ]
+        for idx_ref, key_name, lbl, col_ref, ls_ref in ml_replacements:
+            if key_name in core_b.index:
+                ml_refs[idx_ref] = {
+                    "label": lbl,
+                    "row": core_b.loc[key_name],
+                    "color": col_ref,
+                    "ls": ls_ref,
+                }
         fig, axes = plt.subplots(1, 2, figsize=(13.2, 5.8))
         for ax, (col, ylabel, is_k, title) in zip(
             axes,
