@@ -16,13 +16,15 @@
   "stress1_metric": 0.31906777948291426,
   "stress1_nonmetric_primary": 0.16298366579792817,
   "dist_r_vs_published_human": 0.9332288800669768,
-  "r_lightness": 0.9430071766581732,
-  "r_grain_size": 0.7264223506764471,
-  "r_roughness": 0.5847982217344062,
-  "r_shininess": 0.7866745344618714,
-  "r_organization": 0.6835147310744294,
-  "r_munsell_chroma": 0.8509416815896236,
-  "mean_r_dims1_6": 0.7625597826991585,
+  "r_lightness": 0.942313637078831,
+  "r_grain_size": 0.7249212517417406,
+  "r_roughness": 0.5834389990819134,
+  "r_shininess": 0.7919913979744124,
+  "r_organization": 0.684329477403992,
+  "r_munsell_chroma": 0.7805370697364786,
+  "mean_r_dims1_6": 0.7512553055028945,
   "elapsed_sec": 158.61868900002446,
-  "mds_file": "output/human_mds_subsampling/ml/mds_solutions/mds_pct060_rep02.csv"
+  "mds_file": "output/human_mds_subsampling/ml/mds_solutions/mds_pct060_rep02.csv",
+  "r_x_prime": 0.7888257299911755,
+  "mean_r_dims1_7": 0.7566225090012203
 }

@@ -66,6 +66,7 @@ TARGET_DIM_COLUMNS = [
     "Shininess",
     "Organization",
     "Munsell Chroma",
+    "x'",
 ]
 
 DIM_SUMMARY_COLS = [
@@ -75,6 +76,7 @@ DIM_SUMMARY_COLS = [
     "r_shininess",
     "r_organization",
     "r_munsell_chroma",
+    "r_x_prime",
 ]
 
 SUMMARY_COLUMNS = [
@@ -97,6 +99,7 @@ SUMMARY_COLUMNS = [
     "dist_r_vs_published_human",
     *DIM_SUMMARY_COLS,
     "mean_r_dims1_6",
+    "mean_r_dims1_7",
     "elapsed_sec",
     "mds_file",
 ]
@@ -632,7 +635,8 @@ def run_single_replicate(
         "stress1_nonmetric_primary": float(mds_res["stress1_nonmetric_primary"]),
         "dist_r_vs_published_human": dist_r,
         **dim_corrs,
-        "mean_r_dims1_6": float(np.mean(list(dim_corrs.values()))),
+        "mean_r_dims1_6": float(np.mean([dim_corrs[c] for c in DIM_SUMMARY_COLS[:6]])),
+        "mean_r_dims1_7": float(np.mean(list(dim_corrs.values()))),
         "elapsed_sec": float(elapsed),
         "mds_file": csv_path.as_posix(),
     }

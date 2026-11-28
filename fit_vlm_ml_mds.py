@@ -150,7 +150,7 @@ def main() -> None:
         slope, intercept = np.polyfit(-d_new, s_obs, 1)
         pred = intercept - slope * d_new
         pct_var = 100.0 * (1.0 - np.sum((s_obs - pred) ** 2) / np.sum((s_obs - s_obs.mean()) ** 2))
-        r_dims = [float(np.corrcoef(rotated[:, d], ratings_arr[:, d])[0, 1]) for d in range(6)]
+        r_dims = [float(np.corrcoef(rotated[:, d], ratings_arr[:, d])[0, 1]) for d in range(len(shm.TARGET_DIM_COLUMNS))]
         r_pub = float(np.corrcoef(pdist(rotated), pdist(pub_human))[0, 1])
         r_old = (
             float(np.corrcoef(pdist(rotated), pdist(np.loadtxt(old_txt)))[0, 1])
@@ -160,7 +160,8 @@ def main() -> None:
 
         print(
             f"{name:24s} | saved -> {out_txt} | {elapsed:.1f}s (best_init={res['best_init']}, iter={res['n_iter']}) | "
-            f"%Var(sim)={pct_var:.2f}% | r_old={r_old:.4f} | r_pub_human={r_pub:.4f} | mean_r6={np.mean(r_dims):.4f}",
+            f"%Var(sim)={pct_var:.2f}% | r_old={r_old:.4f} | r_pub_human={r_pub:.4f} | "
+            f"mean_r6={np.mean(r_dims[:6]):.4f} | r_x'={r_dims[6]:.4f} | mean_r7={np.mean(r_dims):.4f}",
             flush=True,
         )
 
